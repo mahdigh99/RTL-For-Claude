@@ -3,6 +3,11 @@
 All notable changes to **RTL for Claude** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.4.5] — 2026-08-10
+
+Nothing changed in the extension itself — the version moves in lockstep with
+the project's patch release fixing the browser extension's collapsed popup.
+
 ## [1.4.4] — 2026-07-31
 
 ### Fixed

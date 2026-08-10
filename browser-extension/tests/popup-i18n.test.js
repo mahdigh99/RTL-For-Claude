@@ -14,6 +14,22 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+/* Static guard, runs even without Chrome: the popup stylesheet must never
+ * size anything in viewport units. Chrome opens the popup viewport tiny and
+ * then sizes it FROM the content, so e.g. a `max-width: 100vw` on body locks
+ * the whole popup at its collapsed initial width (shipped broken in 1.4.x). */
+{
+  const css = fs.readFileSync(path.join(__dirname, "../src/popup.css"), "utf8");
+  const vwHits = css
+    .replace(/\/\*[\s\S]*?\*\//g, "")
+    .match(/[\d.]+\s*(vw|vh|vmin|vmax|svw|svh|lvw|lvh|dvw|dvh)\b/g);
+  if (vwHits) {
+    console.error("FAIL popup.css uses viewport units (breaks popup sizing): " + vwHits.join(", "));
+    process.exit(1);
+  }
+  console.log("ok   popup.css avoids viewport units");
+}
+
 const CHROME_CANDIDATES = [
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
   "/Applications/Chromium.app/Contents/MacOS/Chromium",

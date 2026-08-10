@@ -3,6 +3,16 @@
 All notable changes to **RTL for Claude** (browser extension + VS Code extension + Claude Desktop patcher).
 This project follows [Semantic Versioning](https://semver.org).
 
+## [1.4.5] — 2026-08-10
+
+### Fixed
+
+- **The browser extension's popup could open as a thin, unusable sliver.**
+  A safeguard meant for very narrow screens told the popup to never be wider
+  than its own window — but Chrome sizes that window *from* the popup's
+  content, so the two settled on the smallest width possible and the settings
+  couldn't be reached. The popup now always opens at its full width.
+
 ## [1.4.4] — 2026-07-31
 
 ### Fixed
