@@ -19,12 +19,18 @@
 #      for "claude.ai" (no hardcoded name; the Electron MAIN entry from
 #      package.json "main" is excluded and never written to — injecting
 #      renderer code there means a silent black screen; ambiguity = abort).
+#      A file that any sibling `require("./…")`s is a shared library chunk
+#      (main-process code), never a preload — skipped even if it carries a
+#      preload-looking string (1.46388.x: `webFrameMain` + claude.ai).
 #   3. APPEND one marker block: prelude (CSS+data-URI Vazirmatn, base64;
 #      CSP is font-src 'self' data: with connect-src 'none', and the sandboxed
 #      preload cannot fs-read a font — data: URI is the only working source)
 #      + rtl-math.js + rtl-engine.js (verbatim from browser-extension/src)
 #      + the desktop driver. Origin guard uses the allowed-origin list
 #      extracted from the bundle itself. node --check + size guard after.
+#      The whole block is wrapped in a function that shadows `module` and
+#      `exports` and returns without a DOM, so it can never replace the host
+#      file's CommonJS exports or run in the main process.
 #   4. asar pack --unpack "{*.node,*.dylib,spawn-helper}" (native modules must
 #      stay unpacked or claude-native/node-pty break).
 #   5. ElectronAsarIntegrity ← SHA256 of the asar HEADER STRING (never the
@@ -113,6 +119,21 @@ strip_patch() { # remove a previous marker block, in place (idempotency)
     skip==0 {print}
     $0==e {skip=0}
   ' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+}
+
+# True when some OTHER file in the build dir loads $2 as a CommonJS module
+# (`require("./name.js")` / `require('./name.js')`). Vite emits exactly that
+# literal for shared chunks; preloads are never loaded that way.
+required_by_sibling() { # $1 = build dir, $2 = basename
+  local dir="$1" base="$2" g
+  for g in "$dir"/*.js; do
+    [ -f "$g" ] || continue
+    [ "$(basename "$g")" = "$base" ] && continue
+    if LC_ALL=C grep -qF "require(\"./$base\")" "$g" || LC_ALL=C grep -qF "require('./$base')" "$g"; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # NOTE: no "${#arr[@]}" on possibly-empty arrays anywhere in this script —
@@ -217,6 +238,14 @@ install_patch() {
   #     preload signature and stay untouched.
   #   • several but NONE with the preload signature ⇒ the layout is something
   #     we have never seen — abort listing everything (die, don't guess).
+  #   • a file that ANY sibling in .vite/build/ `require("./<name>")`s is a
+  #     shared library chunk loaded by the Electron main process, never a
+  #     preload (preloads are wired via BrowserWindow options, not require).
+  #     Skipped BEFORE the signature test: 1.46388.x ships a 6 MB main-process
+  #     chunk that mentions claude.ai and `webFrameMain`, and appending the
+  #     payload there replaced its CommonJS exports ("t.Xu is not a function"
+  #     on every IPC call). The signature regex itself also stops matching
+  #     `webFrameMain` (main-process API) — `webFrame` must end the word.
   local skip_hosts=" directMcpHost.js nodeHost.js shellPathWorker.js transcriptSearchWorker.js "
   local targets="" target_names="" target_count=0
   local names="" count=0 sole="" pre_targets="" pre_names="" pre_count=0 f base
@@ -226,8 +255,12 @@ install_patch() {
     [ "$base" = "$main_base" ] && continue
     case "$skip_hosts" in *" $base "*) log "skipping $base (Node host/worker, no DOM)"; continue ;; esac
     LC_ALL=C grep -q 'claude\.ai' "$f" || continue
+    if required_by_sibling "$build_dir" "$base"; then
+      log "skipping $base (library chunk: require()d by another bundle file, not a preload)"
+      continue
+    fi
     sole="$f"; names="${names:+$names, }$base"; count=$((count + 1))
-    if LC_ALL=C grep -qE 'contextBridge|webFrame|electron/renderer' "$f"; then
+    if LC_ALL=C grep -qE 'contextBridge|electron/renderer|webFrame([^A-Za-z0-9_]|$)' "$f"; then
       pre_targets="${pre_targets}${f}"$'\n'
       pre_names="${pre_names:+$pre_names, }$base"
       pre_count=$((pre_count + 1))
@@ -286,9 +319,16 @@ install_patch() {
     strip_patch "$preload"
     old_bytes=$(wc -c < "$preload")
     if [ -s "$preload" ] && [ -n "$(tail -c1 "$preload")" ]; then printf '\n' >> "$preload"; fi
+    # The block is one function call: `module`/`exports` are shadowed so the
+    # pieces' `module.exports = …` (kept for the node unit tests) can never
+    # replace the host file's CommonJS exports, and it returns before running
+    # anything when there is no DOM (Electron main process / Node hosts).
     {
       printf '%s\n' "$BEGIN_MARK"
+      printf ';(function (module, exports) {\n'
+      printf 'if (typeof window === "undefined" || typeof document === "undefined") return;\n'
       cat "$TMP_DIR/prelude.js" "$MATH_SRC" "$ENGINE_SRC" "$DRIVER_SRC"
+      printf '\n})();\n'
       printf '%s\n' "$END_MARK"
     } >> "$preload"
 

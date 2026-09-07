@@ -3,6 +3,20 @@
 All notable changes to **RTL for Claude** (browser extension + VS Code extension + Claude Desktop patcher).
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+### Fixed
+
+- **Claude Desktop (macOS) patched copy broke on the app's 1.46388 build.**
+  After re-running the patcher on the updated app, the patched copy showed
+  "t.Xu is not a function" and local sessions, scheduled tasks and plugins
+  stopped working. The new build ships a large internal main-process bundle
+  that looked like a window preload to the patcher, so the RTL payload was
+  appended there and wiped that bundle's exports. The patcher now recognises
+  such shared bundles and never touches them, and the payload is wrapped so
+  it cannot alter a host file's exports even if it were misplaced. Re-run
+  the installer once to rebuild the copy.
+
 ## [1.4.5] — 2026-08-10
 
 ### Fixed

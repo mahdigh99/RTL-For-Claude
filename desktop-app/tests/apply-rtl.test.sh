@@ -8,7 +8,8 @@
 # correct header-string integrity hash, native files stay unpacked & intact,
 # data-URI font + extracted origins present, node --check, ad-hoc codesign),
 # idempotent re-install, --remove (original byte-for-byte untouched),
-# ambiguous-preload abort, multi-preload new layout, zero-candidate abort.
+# ambiguous-preload abort, multi-preload new layout, main-process shared
+# chunks never targeted + exports never replaced (5d), zero-candidate abort.
 # ============================================================================
 set -euo pipefail
 
@@ -71,6 +72,16 @@ grep -q 'RTLXMath' "$mv"                               || fail "rtl-math.js miss
 grep -q 'global.RTLX' "$mv"                            || fail "rtl-engine.js missing"
 grep -q '__rtlxDesktop' "$mv"                          || fail "driver.js missing"
 node --check "$mv"                                     || fail "patched mainView.js fails node --check"
+# The block must be wrapped so it can NEVER replace the host file's CommonJS
+# exports (rtl-math.js does `module.exports = API` for the unit tests) and
+# never runs without a DOM: require() it in plain Node — exports stay empty.
+grep -q '^;(function (module, exports) {$' "$mv"       || fail "payload is not wrapped in the module/exports-shadowing function"
+node -e '
+  const m = require(process.argv[1]);
+  if (Object.keys(m).length || typeof globalThis.RTLXMath !== "undefined" || typeof globalThis.RTLX !== "undefined") {
+    console.error("payload leaked into module.exports/globals: " + Object.keys(m)); process.exit(1);
+  }
+' "$mv"                                                || fail "payload replaced the preload's module.exports or ran without a DOM"
 # The Electron MAIN entry (also mentions claude.ai) must be byte-identical.
 cmp -s "$appsrc/.vite/build/index.pre.js" "$test_root/x1/.vite/build/index.pre.js" \
                                                        || fail "main entry was modified (black-screen risk)"
@@ -199,6 +210,38 @@ cmp -s "$appsrc/.vite/build/index.pre.js" "$test_root/x6/.vite/build/index.pre.j
 bash "$PATCHER" --remove >/dev/null
 rm -f "$appsrc/.vite/build/mainWindow.js" "$appsrc/.vite/build/quickWindow.js" \
       "$appsrc/.vite/build/index.chunk-AAAA1111.js" "$appsrc/.vite/build/claudePagePreview.js"
+printf 'const A="https://claude.ai";const B="https://preview.claude.ai";console.log(A,B);' > "$appsrc/.vite/build/mainView.js"
+build_fixture
+
+# --- 5d. main-process shared chunk (1.46388.x) must never be a target -----------
+# The real app ships a 6 MB chunk require()d by ~140 sibling files that
+# mentions claude.ai AND `webFrameMain`; patching it replaced its exports and
+# every IPC call died with "t.Xu is not a function". Two independent layers
+# are tested: (a) `webFrameMain` no longer satisfies the preload signature,
+# (b) any file a sibling require()s is skipped even with a real signature.
+printf 'const {contextBridge}=require("electron/renderer");contextBridge;console.log("https://claude.ai");' > "$appsrc/.vite/build/mainView.js"
+printf 'const o={webFrameMain:{fromId(){}}};o.webFrameMain;exports.Xu=function(){return "https://claude.ai"};' > "$appsrc/.vite/build/index.chunk-SHARED000.js"
+printf 'exports.eN=function(){return "contextBridge string in a message, https://claude.ai"};' > "$appsrc/.vite/build/index.chunk-LIB000000.js"
+printf 'const t=require("./index.chunk-SHARED000.js"),u=require(%s./index.chunk-LIB000000.js%s);module.exports={ok:t.Xu()+u.eN()};' "'" "'" > "$appsrc/.vite/build/index.chunk-USER000000.js"
+printf 'const o={webFrameMain:{fromId(){}}};o.webFrameMain;console.log("orphan main chunk https://claude.ai");' > "$appsrc/.vite/build/index.chunk-ORPHAN0000.js"
+build_fixture
+bash "$PATCHER" --install >/dev/null || fail "layout with main-process chunks should install"
+rm -rf "$test_root/x7"; npx --yes @electron/asar extract "$PASAR" "$test_root/x7"
+[ "$(grep -c 'RTL-PATCH (begin)' "$test_root/x7/.vite/build/mainView.js")" -eq 1 ] \
+  || fail "the real preload should still be patched alongside main-process chunks"
+cmp -s "$appsrc/.vite/build/index.chunk-SHARED000.js" "$test_root/x7/.vite/build/index.chunk-SHARED000.js" \
+  || fail "a require()d main-process chunk (claude.ai + webFrameMain) was patched"
+cmp -s "$appsrc/.vite/build/index.chunk-LIB000000.js" "$test_root/x7/.vite/build/index.chunk-LIB000000.js" \
+  || fail "a require()d chunk carrying a signature string was patched (sibling-require guard)"
+cmp -s "$appsrc/.vite/build/index.chunk-ORPHAN0000.js" "$test_root/x7/.vite/build/index.chunk-ORPHAN0000.js" \
+  || fail "webFrameMain alone must not count as a preload signature"
+node -e '
+  const m = require(process.argv[1]);
+  if (typeof m.ok !== "string" || !m.ok.includes("claude.ai")) { console.error("chunk exports broken: " + JSON.stringify(m)); process.exit(1); }
+' "$test_root/x7/.vite/build/index.chunk-USER000000.js"  || fail "main-process chunk graph no longer loads (exports replaced)"
+bash "$PATCHER" --remove >/dev/null
+rm -f "$appsrc/.vite/build/index.chunk-SHARED000.js" "$appsrc/.vite/build/index.chunk-LIB000000.js" \
+      "$appsrc/.vite/build/index.chunk-USER000000.js" "$appsrc/.vite/build/index.chunk-ORPHAN0000.js"
 printf 'const A="https://claude.ai";const B="https://preview.claude.ai";console.log(A,B);' > "$appsrc/.vite/build/mainView.js"
 build_fixture
 

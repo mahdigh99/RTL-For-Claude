@@ -3,6 +3,12 @@
 All notable changes to **RTL for Claude** are documented here.
 This project follows [Semantic Versioning](https://semver.org).
 
+## [Unreleased]
+
+Nothing changed in the extension itself — the version moves in lockstep with
+the project's patch release fixing the Claude Desktop (macOS) patcher on the
+app's 1.46388 build.
+
 ## [1.4.5] — 2026-08-10
 
 Nothing changed in the extension itself — the version moves in lockstep with
